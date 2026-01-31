@@ -1,0 +1,378 @@
+"use client";
+
+import { useState, useCallback, useRef, useEffect } from "react";
+import { ModelConfig } from "@/lib/types";
+import { PresetsProvider } from "@/lib/presets-context";
+import { ModelSidebar } from "@/components/model-sidebar";
+import { ModelEditor } from "@/components/model-editor";
+import { EmptyState } from "@/components/empty-state";
+import { PresetsDialog } from "@/components/presets-dialog";
+import { toast } from "sonner";
+import {
+  Upload,
+  Download,
+  Plus,
+  Terminal,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RawModel = Record<string, any>;
+
+// Normalize model to ensure all required fields exist for editing
+function normalizeModel(m: Partial<ModelConfig>): ModelConfig {
+  return {
+    id: m.id ?? "",
+    name: m.name ?? m.id ?? "Unknown",
+    owned_by: m.owned_by ?? "unknown",
+    openai: m.openai ?? { id: m.id ?? "" },
+    urlIdx: m.urlIdx ?? 0,
+    connection_type: m.connection_type ?? "external",
+    user_id: m.user_id ?? "",
+    base_model_id: m.base_model_id ?? null,
+    params: m.params ?? {},
+    meta: {
+      profile_image_url: m.meta?.profile_image_url ?? "",
+      description: m.meta?.description ?? null,
+      capabilities: m.meta?.capabilities ?? {},
+      suggestion_prompts: m.meta?.suggestion_prompts ?? null,
+      tags: m.meta?.tags ?? [],
+    },
+    access_control: m.access_control ?? null,
+    is_active: m.is_active ?? true,
+    updated_at: m.updated_at ?? Math.floor(Date.now() / 1000),
+    created_at: m.created_at ?? Math.floor(Date.now() / 1000),
+  };
+}
+
+// Deep merge edited model back to raw, preserving original structure
+function mergeToRaw(raw: RawModel | undefined, edited: ModelConfig): RawModel {
+  if (!raw) return edited; // New model, use as-is
+
+  const result: RawModel = { ...raw };
+
+  // Merge top-level fields
+  for (const key of Object.keys(edited) as (keyof ModelConfig)[]) {
+    const editedVal = edited[key];
+    const rawVal = raw[key];
+
+    if (key === "meta") {
+      // Handle meta specially - preserve structure
+      if (rawVal === undefined && !edited.meta?.profile_image_url && !edited.meta?.description &&
+          (!edited.meta?.capabilities || Object.keys(edited.meta.capabilities).length === 0) &&
+          (!edited.meta?.tags || edited.meta.tags.length === 0)) {
+        // Meta was empty and still is, don't add it
+        continue;
+      }
+      result.meta = { ...rawVal };
+      if (edited.meta) {
+        for (const mk of Object.keys(edited.meta) as (keyof typeof edited.meta)[]) {
+          const ev = edited.meta[mk];
+          // Only set if value is meaningful or was in original
+          if (ev !== undefined && ev !== "" && ev !== null &&
+              !(Array.isArray(ev) && ev.length === 0) &&
+              !(typeof ev === "object" && !Array.isArray(ev) && Object.keys(ev).length === 0)) {
+            result.meta[mk] = ev;
+          } else if (rawVal?.[mk] !== undefined) {
+            result.meta[mk] = ev; // Preserve original empty value behavior
+          }
+        }
+      }
+    } else if (key === "params") {
+      if (rawVal === undefined && Object.keys(edited.params).length === 0) {
+        result.params = {};
+      } else {
+        result.params = { ...rawVal, ...edited.params };
+        // Remove undefined values
+        for (const pk of Object.keys(result.params)) {
+          if (result.params[pk] === undefined) delete result.params[pk];
+        }
+      }
+    } else if (key === "openai") {
+      result.openai = { ...rawVal, ...edited.openai };
+    } else {
+      result[key] = editedVal;
+    }
+  }
+
+  return result;
+}
+
+export default function Home() {
+  const [models, setModels] = useState<ModelConfig[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hasUnsaved, setHasUnsaved] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const rawModelsRef = useRef<Map<string, RawModel>>(new Map());
+
+  const selectedModel = models.find((m) => m.id === selectedId) ?? null;
+
+  const handleImport = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const data = JSON.parse(ev.target?.result as string);
+          const arr: RawModel[] = Array.isArray(data) ? data : [data];
+          // Store raw models
+          rawModelsRef.current.clear();
+          arr.forEach((m) => rawModelsRef.current.set(m.id, m));
+          setModels(arr.map(normalizeModel));
+          setSelectedId(null);
+          setHasUnsaved(false);
+          toast.success(`Loaded ${arr.length} models`);
+        } catch {
+          toast.error("Invalid JSON file");
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    },
+    []
+  );
+
+  const handleExport = useCallback(() => {
+    // Merge edited models back to their original raw structure
+    const exportData = models.map((m) =>
+      mergeToRaw(rawModelsRef.current.get(m.id), m)
+    );
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `models-export-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Exported successfully");
+  }, [models]);
+
+  const handleModelUpdate = useCallback(
+    (updated: ModelConfig) => {
+      setModels((prev) =>
+        prev.map((m) => (m.id === updated.id ? updated : m))
+      );
+      setHasUnsaved(true);
+    },
+    []
+  );
+
+  const handleAddModel = useCallback(() => {
+    const now = Math.floor(Date.now() / 1000);
+    const newModel: ModelConfig = {
+      id: `new-model-${now}`,
+      name: "New Model",
+      owned_by: "openai",
+      openai: {
+        id: `new-model-${now}`,
+        name: `new-model-${now}`,
+        owned_by: "openai",
+        openai: { id: `new-model-${now}` },
+        urlIdx: 0,
+        connection_type: "external",
+      },
+      urlIdx: 0,
+      connection_type: "external",
+      user_id: "",
+      base_model_id: null,
+      params: {},
+      meta: {
+        profile_image_url: "",
+        description: "",
+        capabilities: {
+          vision: false,
+          file_upload: false,
+          web_search: false,
+          image_generation: false,
+          code_interpreter: false,
+          citations: false,
+          status_updates: false,
+          usage: false,
+        },
+        suggestion_prompts: null,
+        tags: [],
+      },
+      access_control: null,
+      is_active: true,
+      updated_at: now,
+      created_at: now,
+    };
+    setModels((prev) => [newModel, ...prev]);
+    setSelectedId(newModel.id);
+    setHasUnsaved(true);
+    toast.success("New model created");
+  }, []);
+
+  const handleDeleteModel = useCallback((id: string) => {
+    setDeleteTarget(id);
+  }, []);
+
+  const confirmDelete = useCallback(() => {
+    if (!deleteTarget) return;
+    setModels((prev) => prev.filter((m) => m.id !== deleteTarget));
+    if (selectedId === deleteTarget) setSelectedId(null);
+    setDeleteTarget(null);
+    setHasUnsaved(true);
+    toast.success("Model deleted");
+  }, [deleteTarget, selectedId]);
+
+  const handleDuplicateModel = useCallback(
+    (id: string) => {
+      const source = models.find((m) => m.id === id);
+      if (!source) return;
+      const now = Math.floor(Date.now() / 1000);
+      const dup: ModelConfig = {
+        ...JSON.parse(JSON.stringify(source)),
+        id: `${source.id}-copy-${now}`,
+        name: `${source.name} (Copy)`,
+        created_at: now,
+        updated_at: now,
+      };
+      const idx = models.findIndex((m) => m.id === id);
+      setModels((prev) => [
+        ...prev.slice(0, idx + 1),
+        dup,
+        ...prev.slice(idx + 1),
+      ]);
+      setSelectedId(dup.id);
+      setHasUnsaved(true);
+      toast.success("Model duplicated");
+    },
+    [models]
+  );
+
+  useEffect(() => {
+    fetch("/models-export.json")
+      .then((r) => r.json())
+      .then((data) => {
+        const arr: RawModel[] = Array.isArray(data) ? data : [data];
+        // Store raw models
+        rawModelsRef.current.clear();
+        arr.forEach((m) => rawModelsRef.current.set(m.id, m));
+        setModels(arr.map(normalizeModel));
+      })
+      .catch(() => {});
+  }, []);
+
+  return (
+    <PresetsProvider>
+    <div className="h-screen flex flex-col overflow-hidden relative scanlines">
+      {/* Header */}
+      <header className="border-b border-border bg-card/80 backdrop-blur-sm z-10 shrink-0">
+        <div className="flex items-center justify-between px-4 h-12">
+          <div className="flex items-center gap-3">
+            <Terminal className="w-4 h-4 text-primary" />
+            <span className="text-sm font-bold text-primary tracking-wider uppercase">
+              Model Config Editor
+            </span>
+            {models.length > 0 && (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                [{models.length} models]
+              </span>
+            )}
+            {hasUnsaved && (
+              <span className="text-xs text-amber-muted animate-pulse">
+                * unsaved
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleAddModel}
+              className="text-xs h-7 gap-1.5 text-muted-foreground hover:text-primary"
+            >
+              <Plus className="w-3 h-3" />
+              New
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              className="text-xs h-7 gap-1.5 text-muted-foreground hover:text-primary"
+            >
+              <Upload className="w-3 h-3" />
+              Import
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleExport}
+              disabled={models.length === 0}
+              className="text-xs h-7 gap-1.5 text-muted-foreground hover:text-primary"
+            >
+              <Download className="w-3 h-3" />
+              Export
+            </Button>
+            <PresetsDialog />
+          </div>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json"
+          className="hidden"
+          onChange={handleImport}
+        />
+      </header>
+
+      {/* Main */}
+      <div className="flex flex-1 min-h-0">
+        <ModelSidebar
+          models={models}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onDelete={handleDeleteModel}
+          onDuplicate={handleDuplicateModel}
+        />
+        <main className="flex-1 min-w-0 h-full overflow-hidden">
+          {selectedModel ? (
+            <ModelEditor
+              model={selectedModel}
+              onUpdate={handleModelUpdate}
+            />
+          ) : (
+            <EmptyState hasModels={models.length > 0} />
+          )}
+        </main>
+      </div>
+
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={() => setDeleteTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Model</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove the model configuration. This action cannot be
+              undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+    </PresetsProvider>
+  );
+}
