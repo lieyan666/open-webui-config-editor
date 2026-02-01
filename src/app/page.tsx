@@ -196,6 +196,23 @@ export default function Home() {
     toast.success("Exported successfully");
   }, [models]);
 
+  const handleExportModified = useCallback((modelIds: string[]) => {
+    const modifiedModels = models.filter((m) => modelIds.includes(m.id));
+    const exportData = modifiedModels.map((m) =>
+      mergeToRaw(rawModelsRef.current.get(m.id), m)
+    );
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `models-modified-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${modifiedModels.length} modified model${modifiedModels.length > 1 ? "s" : ""}`);
+  }, [models]);
+
   const handleModelUpdate = useCallback(
     (updated: ModelConfig) => {
       setModels((prev) => {
@@ -344,7 +361,7 @@ export default function Home() {
               </span>
             )}
             {hasUnsaved && (
-              <ChangesDialog models={models} rawModels={rawModelsRef.current}>
+              <ChangesDialog models={models} rawModels={rawModelsRef.current} onExportModified={handleExportModified}>
                 <button className="text-xs text-amber-muted animate-pulse hover:text-primary transition-colors flex items-center gap-1">
                   <FileDiff className="w-3 h-3" />
                   * unsaved

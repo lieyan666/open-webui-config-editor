@@ -9,8 +9,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { FileDiff } from "lucide-react";
+import { FileDiff, Download } from "lucide-react";
+import { toast } from "sonner";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type RawModel = Record<string, any>;
@@ -19,6 +21,7 @@ interface Props {
   models: ModelConfig[];
   rawModels: Map<string, RawModel>;
   children: React.ReactNode;
+  onExportModified?: (modelIds: string[]) => void;
 }
 
 function diffModel(
@@ -53,7 +56,7 @@ function diffModel(
   return changes;
 }
 
-export function ChangesDialog({ models, rawModels, children }: Props) {
+export function ChangesDialog({ models, rawModels, children, onExportModified }: Props) {
   const allChanges: { model: ModelConfig; changes: string[] }[] = [];
 
   // Check for modified or new models
@@ -68,6 +71,15 @@ export function ChangesDialog({ models, rawModels, children }: Props) {
   // Check for deleted models
   const currentIds = new Set(models.map((m) => m.id));
   const deletedIds = [...rawModels.keys()].filter((id) => !currentIds.has(id));
+
+  const handleExportModified = () => {
+    const modifiedIds = allChanges.map((c) => c.model.id);
+    if (modifiedIds.length === 0) {
+      toast.info("No modified models to export");
+      return;
+    }
+    onExportModified?.(modifiedIds);
+  };
 
   return (
     <Dialog>
@@ -135,6 +147,19 @@ export function ChangesDialog({ models, rawModels, children }: Props) {
             </div>
           )}
         </ScrollArea>
+        {allChanges.length > 0 && onExportModified && (
+          <div className="pt-3 border-t border-border">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full h-8 text-xs gap-1.5"
+              onClick={handleExportModified}
+            >
+              <Download className="w-3 h-3" />
+              Export {allChanges.length} Modified Model{allChanges.length > 1 ? "s" : ""}
+            </Button>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );
