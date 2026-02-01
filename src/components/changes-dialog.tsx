@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { ModelConfig } from "@/lib/types";
 import {
   Dialog,
@@ -10,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FileDiff, Download } from "lucide-react";
 import { toast } from "sonner";
@@ -24,6 +26,30 @@ interface Props {
   onExportModified?: (modelIds: string[]) => void;
 }
 
+// Normalize value for comparison: treat undefined/null/empty as equivalent
+function normalize(val: unknown): unknown {
+  if (val === undefined || val === null) return null;
+  if (typeof val === "string" && val === "") return null;
+  if (Array.isArray(val) && val.length === 0) return null;
+  if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+    const obj = val as Record<string, unknown>;
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return null;
+    // Recursively normalize object values
+    const normalized: Record<string, unknown> = {};
+    let hasValue = false;
+    for (const k of keys) {
+      const nv = normalize(obj[k]);
+      if (nv !== null) {
+        normalized[k] = nv;
+        hasValue = true;
+      }
+    }
+    return hasValue ? normalized : null;
+  }
+  return val;
+}
+
 function diffModel(
   original: RawModel | undefined,
   current: ModelConfig
@@ -32,8 +58,10 @@ function diffModel(
 
   const changes: string[] = [];
   const check = (path: string, a: unknown, b: unknown) => {
-    const sa = JSON.stringify(a);
-    const sb = JSON.stringify(b);
+    const na = normalize(a);
+    const nb = normalize(b);
+    const sa = JSON.stringify(na);
+    const sb = JSON.stringify(nb);
     if (sa !== sb) {
       changes.push(path);
     }
@@ -72,14 +100,44 @@ export function ChangesDialog({ models, rawModels, children, onExportModified }:
   const currentIds = new Set(models.map((m) => m.id));
   const deletedIds = [...rawModels.keys()].filter((id) => !currentIds.has(id));
 
+  // Selection state for export
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Reset selection when allChanges changes
+  useEffect(() => {
+    setSelectedIds(new Set(allChanges.map((c) => c.model.id)));
+  }, [allChanges.length]);
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selectedIds.size === allChanges.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(allChanges.map((c) => c.model.id)));
+    }
+  };
+
   const handleExportModified = () => {
-    const modifiedIds = allChanges.map((c) => c.model.id);
-    if (modifiedIds.length === 0) {
-      toast.info("No modified models to export");
+    const idsToExport = [...selectedIds];
+    if (idsToExport.length === 0) {
+      toast.info("No models selected for export");
       return;
     }
-    onExportModified?.(modifiedIds);
+    onExportModified?.(idsToExport);
   };
+
+  const selectedCount = selectedIds.size;
 
   return (
     <Dialog>
@@ -103,8 +161,15 @@ export function ChangesDialog({ models, rawModels, children, onExportModified }:
                   key={model.id}
                   className="border border-border rounded-md p-2.5 space-y-1.5"
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium">{model.name}</span>
+                  <div className="flex items-center gap-2">
+                    {onExportModified && (
+                      <Checkbox
+                        checked={selectedIds.has(model.id)}
+                        onCheckedChange={() => toggleSelection(model.id)}
+                        className="h-3.5 w-3.5"
+                      />
+                    )}
+                    <span className="text-xs font-medium flex-1">{model.name}</span>
                     {!rawModels.has(model.id) ? (
                       <Badge className="text-[9px] h-4 bg-emerald-500/20 text-emerald-400 border-0">
                         NEW
@@ -115,10 +180,10 @@ export function ChangesDialog({ models, rawModels, children, onExportModified }:
                       </Badge>
                     )}
                   </div>
-                  <p className="text-[10px] text-muted-foreground font-mono">
+                  <p className="text-[10px] text-muted-foreground font-mono pl-5">
                     {model.id}
                   </p>
-                  <div className="flex flex-wrap gap-1 mt-1">
+                  <div className="flex flex-wrap gap-1 mt-1 pl-5">
                     {changes.map((c) => (
                       <Badge
                         key={c}
@@ -148,15 +213,27 @@ export function ChangesDialog({ models, rawModels, children, onExportModified }:
           )}
         </ScrollArea>
         {allChanges.length > 0 && onExportModified && (
-          <div className="pt-3 border-t border-border">
+          <div className="pt-3 border-t border-border space-y-2">
+            <div className="flex items-center justify-between">
+              <button
+                onClick={toggleAll}
+                className="text-[10px] text-muted-foreground hover:text-primary transition-colors"
+              >
+                {selectedIds.size === allChanges.length ? "Deselect All" : "Select All"}
+              </button>
+              <span className="text-[10px] text-muted-foreground">
+                {selectedCount} of {allChanges.length} selected
+              </span>
+            </div>
             <Button
               variant="outline"
               size="sm"
               className="w-full h-8 text-xs gap-1.5"
               onClick={handleExportModified}
+              disabled={selectedCount === 0}
             >
               <Download className="w-3 h-3" />
-              Export {allChanges.length} Modified Model{allChanges.length > 1 ? "s" : ""}
+              Export {selectedCount} Model{selectedCount !== 1 ? "s" : ""}
             </Button>
           </div>
         )}
